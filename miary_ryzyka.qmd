@@ -63,8 +63,8 @@ etf.dropna(inplace=True)
 
 ```{python}
 weights = np.array([0.5, 0.25, 0.25])
-portfolio = san * weights[0] + bonds * weights[1] + pln_eur * weights[2]
-df = pd.concat([san, etf, pln_eur, portfolio], axis=1, join='outer').interpolate(method='linear', limit_direction='forward', axis=0)
+portfolio = san * weights[0] + etf * weights[1] + pln_eur * weights[2]
+df = pd.concat([san, etf, pln_eur, portfolio], axis=1, join='outer').interpolate(method='linear', limit_direction='forward', axis=0).dropna()
 df.columns = ['san', 'etf', 'eur/pln', 'portfolio']
 
 fig, axs = plt.subplots(2, 4, figsize=(20, 10))
@@ -201,7 +201,7 @@ plt.ylabel('Pct. loss')
 ```
 
 ```{python}
-from scipy.stats import genextreme, gumbel_r, weibull_max, cramervonmises, kstest
+from scipy.stats import genextreme, gumbel_r, weibull_max, invweibull, cramervonmises, kstest
 
 n = 20
 ls = 100 * (1 - np.exp(df.san))
@@ -215,25 +215,31 @@ params_gev = genextreme.fit(maxs)
 params_gumbel = gumbel_r.fit(maxs)
 
 # fit weibull
-params_weibull = weibull_max.fit(maxs)
+params_weibull = weibull_max.fit(maxs, method='MM')
+
+# fit frechet
+params_frechet = invweibull.fit(maxs)
 
 fig, ax = plt.subplots()
 fig.set_size_inches(10, 5)
 x = np.linspace(min(maxs), max(maxs), 100)
 y = genextreme.pdf(x, *params_gev)
-sns.histplot(maxs, stat='density', alpha=0.5, ax=ax, color ='gray')
+sns.histplot(maxs, stat='density', alpha=0.5, ax=ax, color='grey')
 ax.plot(x, y, 'r-', lw=2,
         label=f'GEV: shape={round(params_gev[0],2)}, loc={round(params_gev[1],2)}, scale={round(params_gev[2],2)}')
 y = gumbel_r.pdf(x, *params_gumbel)
-ax.plot(x, y, 'black', lw=2,
+ax.plot(x, y, 'g-', lw=2,
         label=f'Gumbel: loc={round(params_gumbel[0],2)}, scale={round(params_gumbel[1],2)}')
 y = weibull_max.pdf(x, *params_weibull)
-# ax.plot(x, y, 'y--', lw=2,
-#         label=f'Weibull: shape={round(params_weibull[0],2)}, loc={round(params_weibull[1],2)}, scale={round(params_weibull[2],2)}')
+ax.plot(x, y, 'y--', lw=2,
+        label=f'Weibull: shape={round(params_weibull[0],2)}, loc={round(params_weibull[1],2)}, scale={round(params_weibull[2],2)}')
+y = invweibull.pdf(x, *params_frechet)
+ax.plot(x, y, 'b-.', lw=2,
+        label=f'Frechet: shape={round(params_frechet[0],2)}, loc={round(params_frechet[1],2)}, scale={round(params_frechet[2],2)}')
 ax.set_title('Fitted distributions')
 ax.set_xlabel('Pct. loss')
 ax.set_ylabel('density')
-fig.legend()
+fig.legend(loc='right')
 ```
 
 Test Craméra-von Misesa
@@ -251,6 +257,24 @@ P-value: `r py$formatted_p`
 
 ```{python}
 res = cramervonmises(maxs, gumbel_r.cdf, args=(params_gumbel))
+formatted_p = f"{res.pvalue:.2e}"
+```
+
+P-value: `r py$formatted_p`
+
+-   na zgodność rozkładu z rozkładem Weibulla
+
+```{python}
+res = cramervonmises(maxs, weibull_max.cdf, args=(params_weibull))
+formatted_p = f"{res.pvalue:.2e}"
+```
+
+P-value: `r py$formatted_p`
+
+-   na zgodność rozkładu z rozkładem Frecheta
+
+```{python}
+res = cramervonmises(maxs, invweibull.cdf, args=(params_frechet))
 formatted_p = f"{res.pvalue:.2e}"
 ```
 
