@@ -1,0 +1,309 @@
+---
+title: "Wyznaczanie miar ryzyka"
+author: "Nadia Gałkiewicz, Joanna Kusy, Tomasz Srebniak, Aleksandra Zachajska"
+execute: 
+  echo: false
+format:
+  revealjs:
+    transition: slide
+    theme: serif
+    self-contained: true
+    scrollable: true
+editor: visual
+title-slide-attributes:
+  data-background-image: "banco-santander-logo-colors.png"
+  data-background-size: cover
+  data-background-opacity: "0.65"
+  data-background-color: "#000000"
+---
+
+```{r setup}
+#| echo: false
+#| warning: false
+#| error: false
+#| output: false
+library(reticulate)
+options(reticulate.python = "/opt/homebrew/bin/python3")
+```
+
+```{python}
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pypfopt import risk_models
+from sklearn.metrics import mean_absolute_error
+
+san = pd.read_csv('dane/san.csv', index_col=0, skiprows=2)
+san['log_return'] = np.log1p(san.iloc[:,0].pct_change())
+san = san.log_return
+san.index = pd.to_datetime(san.index, format='%Y-%m-%d')
+san.dropna(inplace=True)
+
+bonds = pd.read_csv('dane/obligacje10lat.csv', index_col=0, decimal=',')[::-1]
+bonds['log_return'] = np.log1p((100*bonds.iloc[:,0]).pct_change())
+bonds = bonds.log_return
+bonds.index = pd.to_datetime(bonds.index, format='%d.%m.%Y')
+
+pln_eur = pd.read_csv('dane/pln_eur.csv', index_col=0, skiprows=2)
+pln_eur['log_return'] = np.log1p(pln_eur.iloc[:,0].pct_change())
+pln_eur = pln_eur.log_return
+pln_eur.index = pd.to_datetime(pln_eur.index, format='%Y-%m-%d')
+pln_eur.dropna(inplace=True)
+```
+
+## Wykresy zwrotów logarytmicznych {background-color="#f5f3f3"}
+
+```{python}
+weights = np.array([0.5, 0.25, 0.25])
+portfolio = san * weights[0] + bonds * weights[1] + pln_eur * weights[2]
+df = pd.concat([san, bonds, pln_eur, portfolio], axis=1, join='inner')
+df.columns = ['san', 'bonds', 'eur/pln', 'portfolio']
+
+fig, axs = plt.subplots(2, 4, figsize=(20, 10))
+axs[0, 0].plot(df.index, df.san, color='r')
+axs[0, 0].set_title('san')
+axs[0, 1].plot(df.index, df.bonds, color='r')
+axs[0, 1].set_title('bonds')
+axs[0, 2].plot(df.index, df['eur/pln'], color='r')
+axs[0, 2].set_title('eur/pln')
+axs[0, 3].plot(df.index, df.portfolio, color='r')
+axs[0, 3].set_title('portfolio')
+sns.ecdfplot(df.san, ax=axs[1, 0], color='r')
+# axs[1, 0].hist(df.san, bins=50)
+axs[1, 0].set_title('san')
+sns.ecdfplot(df.bonds, ax=axs[1, 1], color='r')
+# axs[1, 1].hist(df.bonds, bins=50)
+axs[1, 1].set_title('bonds')
+sns.ecdfplot(df['eur/pln'], ax=axs[1, 2], color='r')
+# axs[1, 2].hist(df['eur/pln'], bins=50)
+axs[1, 2].set_title('eur/pln')
+sns.ecdfplot(df.portfolio, ax=axs[1, 3], color='r')
+# axs[1, 3].hist(df.portfolio, bins=50)
+axs[1, 3].set_title('portfolio')
+axs[0, 0].set_ylabel('log return')
+axs[1, 0].set_ylabel('empirical cdf')
+axs[0, 0].set_xlabel('time')
+axs[0, 1].set_xlabel('time')
+axs[0, 2].set_xlabel('time')
+axs[0, 3].set_xlabel('time')
+axs[1, 0].set_xlabel('log return')
+axs[1, 1].set_xlabel('log return')
+axs[1, 2].set_xlabel('log return')
+axs[1, 3].set_xlabel('log return')
+axs[0, 0].legend(['log return'])
+axs[1, 0].legend(['empirical cdf'])
+plt.tight_layout()
+```
+
+```{python}
+fig = plt.figure(figsize=(10, 10))
+ax = fig.add_subplot(111, projection='3d')
+ax.scatter(df.san, df.bonds, df['eur/pln'], c='r', marker='o')
+ax.set_xlabel('san')
+ax.set_ylabel('bonds')
+ax.set_zlabel('eur/pln')
+ax.set_title('3D scatter plot of log returns')
+```
+
+## Statystyki {background-color="#f5f3f3"}
+
+```{python}
+def empirical_cdf(data, x):
+    return np.sum(data <= x) / len(data)
+def create_table(data):
+    table = pd.DataFrame(index=['mean', 'std', 'mad', 'semi std', 'skew', 'kurt',
+                                'q_0.05', 'q_0.5', 'q_0.75', 'q_0.95',
+                                'ecdf(-1)', 'ecdf(-0.5)', 'ecdf(0)', 'ecdf(0.5)', 'ecdf(1)',
+                               'ann vol'])
+    for col in data.columns:
+        table = pd.DataFrame(index=['mean', 'std', 'mad', 'semi std', 'skew', 'kurt',
+                                'q_0.05', 'q_0.5', 'q_0.75', 'q_0.95',
+                                'ecdf(-1)', 'ecdf(-0.5)', 'ecdf(0)', 'ecdf(0.5)', 'ecdf(1)',
+                                'ann vol'])
+    for col in data.columns:
+        if col == 'portfolio':
+            continue
+        table[col] = [
+            data[col].mean(),
+            data[col].std(),
+            mean_absolute_error(data[col], np.ones(data[col].size) * data[col].mean()),
+            data[data[col] < data[col].mean()][col].std(),
+            data[col].skew(),
+            data[col].kurt(),
+            data[col].quantile(0.05),
+            data[col].quantile(0.5),
+            data[col].quantile(0.75),
+            data[col].quantile(0.95),
+            empirical_cdf(data[col], -1),
+            empirical_cdf(data[col], -.5),
+            empirical_cdf(data[col], 0),
+            empirical_cdf(data[col], .5),
+            empirical_cdf(data[col], 1),
+            str(round(np.sqrt(252) * data[col].std() * 100, 2)) + '%'
+        ]
+    port = data['portfolio']
+    table['portfolio'] = [
+        port.mean(),
+        np.sqrt(weights.T @ df.iloc[:, :3].cov() @ weights),
+        np.mean(np.abs(port - np.sum(df.iloc[:, :3].mean() * weights))),
+        '-',
+        port.skew(),
+        port.kurt(),
+        port.quantile(0.05),
+        port.quantile(0.5),
+        port.quantile(0.75),
+        port.quantile(0.95),
+        empirical_cdf(port, -1),
+        empirical_cdf(port, -0.5),
+        empirical_cdf(port, 0),
+        empirical_cdf(port, 0.5),
+        empirical_cdf(port, 1),
+        str(round(np.sqrt(252) * np.sqrt(weights.T @ df.iloc[:, :3].cov() @ weights) * 100, 2)) + '%'
+    ]
+
+    return table
+table = create_table(df)
+table.style.format(precision=4)
+```
+
+## Kowariancja {background-color="#f5f3f3"}
+
+```{python}
+df.cov().style.set_table_styles(
+    [{'selector': 'th', 'props': [('text-align', 'center')]},
+     {'selector': 'td', 'props': [('text-align', 'center')]}]
+).set_properties(**{'margin-left': 'auto', 'margin-right': 'auto'})
+```
+
+## GEV {background-color="#f5f3f3"}
+
+```{python}
+fig, ax = plt.subplots()
+fig.set_size_inches(10, 4)
+ls = 100 * (1 - np.exp(df.san))
+rolling_max = ls.rolling(window=20).max()
+plt.plot(df.index, rolling_max, color='black')
+plt.plot(df.index, ls, color='r')
+plt.title('Daily Pct. Loss, Rolling maximum')
+plt.xlabel('time')
+plt.ylabel('Pct. loss')
+```
+
+```{python}
+from scipy.stats import genextreme, gumbel_r, weibull_max, cramervonmises, kstest
+
+n = 20
+ls = 100 * (1 - np.exp(df.san))
+ls = np.array_split(ls, len(ls) // n)
+maxs = [np.max(x) for x in ls]
+
+# fit gev
+params_gev = genextreme.fit(maxs)
+
+# fit gumbel
+params_gumbel = gumbel_r.fit(maxs)
+
+# fit weibull
+params_weibull = weibull_max.fit(maxs)
+
+fig, ax = plt.subplots()
+fig.set_size_inches(10, 5)
+x = np.linspace(min(maxs), max(maxs), 100)
+y = genextreme.pdf(x, *params_gev)
+sns.histplot(maxs, stat='density', alpha=0.5, ax=ax)
+ax.plot(x, y, 'r-', lw=2,
+        label=f'GEV: shape={round(params_gev[0],2)}, loc={round(params_gev[1],2)}, scale={round(params_gev[2],2)}')
+y = gumbel_r.pdf(x, *params_gumbel)
+ax.plot(x, y, 'g-', lw=2,
+        label=f'Gumbel: loc={round(params_gumbel[0],2)}, scale={round(params_gumbel[1],2)}')
+y = weibull_max.pdf(x, *params_weibull)
+# ax.plot(x, y, 'y--', lw=2,
+#         label=f'Weibull: shape={round(params_weibull[0],2)}, loc={round(params_weibull[1],2)}, scale={round(params_weibull[2],2)}')
+ax.set_title('Fitted distributions')
+ax.set_xlabel('Pct. loss')
+ax.set_ylabel('density')
+fig.legend()
+```
+
+Test Craméra-von Misesa
+
+-   na zgodność rozkładu z uogólnionym rozkładem wartości ekstremalnych
+
+```{python}
+cramervonmises(maxs, genextreme.cdf, args=(params_gev))
+```
+
+$H_0$ akceptowana $\implies$ dane pochodzą z tego rozkładu
+
+-   na zgodność rozkładu z prawoskośnym rozkładem Gumbela
+
+```{python}
+cramervonmises(maxs, gumbel_r.cdf, args=(params_gumbel))
+```
+
+$H_0$ akceptowana $\implies$ dane pochodzą z tego rozkładu
+
+## Warunkowy rozkład przekroczenia {background-color="#f5f3f3"}
+
+```{python}
+from scipy.stats import genpareto
+fig, ax = plt.subplots()
+fig.set_size_inches(10, 4)
+ls = 100 * (1 - np.exp(df.san))
+ls.plot(color='r')
+plt.title('Daily Pct. Losses')
+plt.xlabel('time')
+plt.ylabel('Pct. Loss')
+```
+
+```{python}
+#| results: false
+def mean_excess(data, v):
+    exceedances = data[data > v]
+    return np.mean(exceedances - v)
+  
+ls = ls[ls > 0]
+fig, ax = plt.subplots(nrows=2)
+fig.set_size_inches(10, 4)
+ax[0].scatter(ls.sort_values(), [mean_excess(ls, l) for l in ls.sort_values()], s=2, c='r')
+ax[0].vlines(2.75, 1.5, 5, 'black', 'dashed')
+ax[0].set_title('mean_excess')
+ax[0].set_ylabel('mean_excess')
+ax[0].set_xlabel('threshold')
+ax[1].set_title('mean_excess')
+ax[1].set_ylabel('mean_excess')
+ax[1].set_xlabel('threshold')
+ax[1].scatter(ls.sort_values(), [mean_excess(ls, l) for l in ls.sort_values()], s=2, c='r')
+ax[1].vlines(2.75, 1.5, 5, 'black', 'dashed')
+ax[1].set_xlim(0, 5)
+plt.tight_layout()
+```
+
+Dopasowanie parametrów dla uogólnionego rozkładu Pareto
+
+```{python}
+v = 2.75
+Ys = ls[ls > v]
+params = genpareto.fit(Ys)
+params
+```
+
+```{python}
+fig, ax = plt.subplots()
+fig.set_size_inches(10, 4)
+sns.ecdfplot(Ys, ax=ax, color='r')
+x = np.linspace(min(Ys), max(Ys), 100)
+ax.plot(x, genpareto.cdf(x, *params),
+        label=f'genpareto: shape={round(params[0],2)}, loc={round(params[1],2)}, scale={round(params[2],2)}', color='black')
+ax.set_xscale('log')
+ax.set_xlabel('x (log scale)')
+ax.set_ylabel('$F_v(x-v)$')
+ax.set_title('Daily pct. losses with fitted GPD cdf')
+fig.legend()
+```
+Test Craméra-von Misesa na zgodność rozkładu z uogólnionym rozkładem Pareto
+```{python}
+cramervonmises(Ys, genpareto.cdf, args=params)
+```
+$H_0$ akceptowana $\implies$ dane pochodzą z tego rozkładu
