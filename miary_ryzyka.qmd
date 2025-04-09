@@ -9,6 +9,7 @@ format:
     theme: serif
     self-contained: true
     scrollable: true
+    fontsize: "20pt"
 editor: visual
 title-slide-attributes:
   data-background-image: "banco-santander-logo-colors.png"
@@ -31,7 +32,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from pypfopt import risk_models
+from statsmodels.graphics.gofplots import qqplot
 from sklearn.metrics import mean_absolute_error
 
 san = pd.read_csv('dane/san.csv', index_col=0, skiprows=2)
@@ -147,7 +148,7 @@ def create_table(data):
         port.mean(),
         np.sqrt(weights.T @ df.iloc[:, :3].cov() @ weights),
         np.mean(np.abs(port - np.sum(df.iloc[:, :3].mean() * weights))),
-        '-',
+        np.sqrt(weights.T @ df[df < 0].iloc[:, :3].cov() @ weights),
         port.skew(),
         port.kurt(),
         port.quantile(0.05),
@@ -171,9 +172,16 @@ table.style.format(precision=4)
 
 ```{python}
 df.cov().style.set_table_styles(
-    [{'selector': 'th', 'props': [('text-align', 'center')]},
-     {'selector': 'td', 'props': [('text-align', 'center')]}]
-).set_properties(**{'margin-left': 'auto', 'margin-right': 'auto'})
+    [{'selector': 'th', 'props': [('text-align', 'center'), ('font-size', '40px')]},
+     {'selector': 'td', 'props': [('text-align', 'center'), ('font-size', '40px')]}]
+).set_properties(**{
+    'margin-left': 'auto',
+    'margin-right': 'auto',
+    'font-size': '18px',
+    'background-color': 'transparent',
+    'color': 'black'  # lub 'white', jeśli tło slajdu jest ciemne
+})
+
 ```
 
 ## GEV {background-color="#f5f3f3"}
@@ -211,11 +219,11 @@ fig, ax = plt.subplots()
 fig.set_size_inches(10, 5)
 x = np.linspace(min(maxs), max(maxs), 100)
 y = genextreme.pdf(x, *params_gev)
-sns.histplot(maxs, stat='density', alpha=0.5, ax=ax)
+sns.histplot(maxs, stat='density', alpha=0.5, ax=ax, color ='gray')
 ax.plot(x, y, 'r-', lw=2,
         label=f'GEV: shape={round(params_gev[0],2)}, loc={round(params_gev[1],2)}, scale={round(params_gev[2],2)}')
 y = gumbel_r.pdf(x, *params_gumbel)
-ax.plot(x, y, 'g-', lw=2,
+ax.plot(x, y, 'black', lw=2,
         label=f'Gumbel: loc={round(params_gumbel[0],2)}, scale={round(params_gumbel[1],2)}')
 y = weibull_max.pdf(x, *params_weibull)
 # ax.plot(x, y, 'y--', lw=2,
@@ -231,31 +239,45 @@ Test Craméra-von Misesa
 -   na zgodność rozkładu z uogólnionym rozkładem wartości ekstremalnych
 
 ```{python}
-cramervonmises(maxs, genextreme.cdf, args=(params_gev))
+res = cramervonmises(maxs, genextreme.cdf, args=(params_gev))
+formatted_p = f"{res.pvalue:.2e}"
 ```
 
-$H_0$ akceptowana $\implies$ dane pochodzą z tego rozkładu
+P-value: `r py$formatted_p`
 
 -   na zgodność rozkładu z prawoskośnym rozkładem Gumbela
 
 ```{python}
-cramervonmises(maxs, gumbel_r.cdf, args=(params_gumbel))
+res = cramervonmises(maxs, gumbel_r.cdf, args=(params_gumbel))
+formatted_p = f"{res.pvalue:.2e}"
 ```
 
-$H_0$ akceptowana $\implies$ dane pochodzą z tego rozkładu
+P-value: `r py$formatted_p`
 
-## Warunkowy rozkład przekroczenia {background-color="#f5f3f3"}
+## Warunkowy rozkład przekroczenia i backtesting {background-color="#f5f3f3"}
+
+Wizualizacja danych
 
 ```{python}
-from scipy.stats import genpareto
+from scipy.stats import genpareto, f, levene
 fig, ax = plt.subplots()
 fig.set_size_inches(10, 4)
 ls = 100 * (1 - np.exp(df.san))
-ls.plot(color='r')
+ls = ls[ls > 0]
+ls_prop = ls.size*4//5
+ls_train = ls.iloc[:ls_prop]
+ls_test = ls.iloc[ls_prop:]
+ls_train.plot(color='r', label='train_data')
+ls_test.plot(color='black', label='test_data')
+ls = ls_train
 plt.title('Daily Pct. Losses')
 plt.xlabel('time')
 plt.ylabel('Pct. Loss')
 ```
+
+<br>
+
+**Warunkowy rozkład przekroczenia** dla danych treningowych
 
 ```{python}
 #| results: false
@@ -263,7 +285,6 @@ def mean_excess(data, v):
     exceedances = data[data > v]
     return np.mean(exceedances - v)
   
-ls = ls[ls > 0]
 fig, ax = plt.subplots(nrows=2)
 fig.set_size_inches(10, 4)
 ax[0].scatter(ls.sort_values(), [mean_excess(ls, l) for l in ls.sort_values()], s=2, c='r')
@@ -280,15 +301,18 @@ ax[1].set_xlim(0, 5)
 plt.tight_layout()
 ```
 
-Dopasowanie parametrów dla uogólnionego rozkładu Pareto
+Dopasowanie parametrów uogólnionego rozkładu Pareto dla danych treningowych
 
 ```{python}
 v = 2.75
 Ys = ls[ls > v]
 params = genpareto.fit(Ys)
-params
 ```
+shape=`r py$params[1]` <br>
+loc = `r py$params[2]`<br>
+scale = `r py$params[3]`
 
+Empiryczna i teoretyczna dystrybuanta GPD
 ```{python}
 fig, ax = plt.subplots()
 fig.set_size_inches(10, 4)
@@ -302,8 +326,44 @@ ax.set_ylabel('$F_v(x-v)$')
 ax.set_title('Daily pct. losses with fitted GPD cdf')
 fig.legend()
 ```
-Test Craméra-von Misesa na zgodność rozkładu z uogólnionym rozkładem Pareto
+
 ```{python}
-cramervonmises(Ys, genpareto.cdf, args=params)
+res = cramervonmises(Ys, genpareto.cdf, args=params)
+formatted_p = f"{res.pvalue:.2e}"
 ```
-$H_0$ akceptowana $\implies$ dane pochodzą z tego rozkładu
+
+P-value z testu Craméra-von Misesa na zgodność rozkładu z uogólnionym rozkładem Pareto (dane treningowe): `r py$formatted_p`
+
+<br>
+
+**Zgodność danych testowych z rozkładem GPD**
+
+```{python}
+ls_genpareto = genpareto.rvs(params[0], loc=params[1], scale=params[2], size=ls_test.size)
+new_test = ls_test[ls_test > v]
+fig, ax = plt.subplots(nrows=2)
+fig.set_size_inches(10, 4)
+sns.histplot(ls_genpareto, ax=ax[0], stat='density', color='red', label='GPD')
+sns.histplot(new_test, ax=ax[0], stat='density', color='gray', label='dane testowe')
+qqplot(new_test, genpareto, distargs=(params[0],), loc=params[1], scale=params[2], ax=ax[1], fit=True, line="45", markerfacecolor='k', markeredgecolor='k', alpha=0.3)
+fig.legend()
+```
+
+```{python}
+result = cramervonmises(new_test, genpareto.cdf, args=params)
+
+formatted_p = f"{result.pvalue:.2e}"
+```
+
+P-value z testu Craméra-von Misesa na zgodność rozkładu z uogólnionym rozkładem Pareto (dane testowe): `r py$formatted_p`
+
+<br>
+
+**Test na równość wariancji**
+
+```{python}
+stat, p_val = levene(new_test, ls_genpareto)
+
+formatted_p = f"{p_val:.2e}"
+```
+P-value z testu Levene na równość wariancji: `r py$formatted_p`
