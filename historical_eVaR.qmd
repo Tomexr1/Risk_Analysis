@@ -1,0 +1,167 @@
+---
+title: "EVaR_historical"
+format: revealjs
+editor: visual
+---
+
+## Wczytanie danych
+
+```{r dane, echo=FALSE}
+# Load libraries
+# install.packages("xts")
+library(xts)
+library(zoo)
+library(ggplot2)
+
+# Read CSV (skip first 2 rows)
+san <- read.csv("dane/san.csv", skip = 2, row.names = 1)
+
+# Convert row names (dates) to Date type
+dates <- as.Date(rownames(san), format = "%Y-%m-%d")
+
+# Create xts object for time series handling
+san_xts <- xts(san[,1], order.by = dates)
+
+# Compute log returns
+log_return <- diff(log(1 + lag.xts(san_xts, k = -1)))
+
+# Remove NA values
+log_return <- na.omit(log_return)
+
+# Apply the transformation: 100 * (1 - exp(log_return))
+ls <- 100 * (1 - exp(log_return))
+
+# Split into train (80%) and test (20%)
+n <- nrow(ls)
+train <- ls[1:floor(0.8 * n)]
+test <- ls[(floor(0.8 * n) + 1):n]
+
+# Plot training data
+plot(train, main = "Train Set", col = "blue", major.ticks = "years", ylab = "Transformed Return")
+```
+
+## Historyczny EVaR
+EVaR(95%)
+```{r EVaR95_hist}
+library(expectreg)
+EVaR95 <- expectile(as.numeric(train), probs = 0.95)
+EVaR95
+```
+EVaR(99%)
+```{r EVaR99_hist}
+EVaR99 <- expectile(as.numeric(train), probs = 0.99)
+EVaR99
+```
+## EVaR dane testowe
+```{r EVaR_test, echo=FALSE, message=FALSE}
+df <- data.frame(
+  Date = index(test),
+  Loss = coredata(test),
+  EVaR95 = rep(EVaR95, length(test)),
+  EVaR99 = rep(EVaR99, length(test))
+)
+
+library(tidyr)
+library(dplyr)
+
+df_long <- df %>%
+  select(Date, Loss, EVaR95, EVaR99) %>%
+  pivot_longer(cols = -Date, names_to = "Rodzaj", values_to = "Wartość")
+
+
+ggplot(df_long, aes(x = Date, y = Wartość, color = Rodzaj, linetype = Rodzaj)) +
+  geom_line() +
+  scale_linetype_manual(values = c("Loss" = "solid", "EVaR95" = "dashed", "EVaR99" = "dotted")) +
+  labs(
+    title = "EVaR 95%, EVaR 99% i dane testowe",
+    x = "Data", y = "Wartość"
+  ) +
+  theme_minimal()
+
+
+```
+eVaR(95%) -- trafność
+```{r EVaR95_efficiency}
+exceptions_evar95 <- test > EVaR95
+mean(exceptions_evar95)  
+```
+eVaR(95%) -- trafność
+```{r EVaR99_efficiency}
+exceptions_evar99 <- test > EVaR99
+mean(exceptions_evar99)
+```
+
+## Historycznie ważony EVaR
+
+```{r EVaR_hist_w}
+ # Tworzymy wektory wag wykładniczych
+lambda <- 0.97
+wts_train <- (lambda^(seq(nrow(train), 1, -1) - 1)) / sum(lambda^(seq(nrow(train), 1, -1) - 1))
+
+# Dodajemy wagi do danych treningowych
+weights_dict_train <- data.frame(Returns = train, Weights = wts_train)
+
+# Przekształcamy na DataFrame i sortujemy według strat
+wts_returns_train <- as.data.frame(weights_dict_train)
+sorted_wts_train <- wts_returns_train[order(wts_returns_train$Returns), ]
+
+# Cumulative sum of weights (ważona suma)
+sorted_wts_train$Cumulative <- cumsum(sorted_wts_train$Weights)
+```
+
+```{r EVaR95_point}
+which(sorted_wts_train$Cumulative >= 0.95)[1]  # pierwszy większy/równy
+```
+```{r EVaR99_point}
+which(sorted_wts_train$Cumulative >= 0.99)[1]
+```
+eVaR(95%) historycznie ważony
+```{r EVaR95_hist_w}
+xp95 <- sorted_wts_train$Cumulative[916:917]
+fp95 <- sorted_wts_train$Returns[916:917]
+
+EVaR_95 <- approx(x = xp95, y = fp95, xout = 0.95)$y
+EVaR_95
+```
+eVaR(99%) historycznie ważony
+```{r EVaR99_hist_w}
+xp99 <- sorted_wts_train$Cumulative[1037:1038]
+fp99 <- sorted_wts_train$Returns[1037:1038]
+
+# EVaR dla 99% (ważone)
+EVaR_99 <- approx(xp99, fp99, xout = 0.99)$y
+EVaR_99
+```
+## EVaR historycznie ważony -- dane testowe
+```{r EVaR_hist_w_plot, echo=FALSE, message=FALSE}
+df <- data.frame(
+  Date = index(test),
+  Loss = coredata(test),
+  EVaR95 = rep(EVaR_95, length(test)),
+  EVaR99 = rep(EVaR_99, length(test))
+)
+
+df_long <- df %>%
+  select(Date, Loss, EVaR95, EVaR99) %>%
+  pivot_longer(cols = -Date, names_to = "Rodzaj", values_to = "Wartość")
+
+
+ggplot(df_long, aes(x = Date, y = Wartość, color = Rodzaj, linetype = Rodzaj)) +
+  geom_line() +
+  scale_linetype_manual(values = c("Loss" = "solid", "EVaR95" = "dashed", "EVaR99" = "dotted")) +
+  labs(
+    title = "EVaR 95%, EVaR 99% i dane testowe",
+    x = "Data", y = "Wartość"
+  ) +
+  theme_minimal()
+```
+eVaR(95%) historycznie ważony -- trafność
+```{r EVaR95_hist_w_efficiency}
+exceptions_evar95 <- test > EVaR_95
+mean(exceptions_evar95)  
+```
+eVaR(99%) historycznie ważony -- trafność
+```{r EVaR99_hist_w_efficiency}
+exceptions_evar99 <- test > EVaR_99
+mean(exceptions_evar99)
+```
